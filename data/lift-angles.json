@@ -1,0 +1,47 @@
+{
+  "soviet": {
+    "label": "Sovietici / Russi",
+    "calibers": [
+      { "brand": "Chaika", "caliber": "13xx", "liftAngle": 46, "bph": 18000 },
+      { "brand": "Luch", "caliber": "18xx", "liftAngle": 46, "bph": 18000 },
+      { "brand": "Luch", "caliber": "22xx", "liftAngle": 49, "bph": 18000 },
+      { "brand": "Molnija", "caliber": "36xx / ChK-6", "liftAngle": 42, "bph": 18000 },
+      { "brand": "Pobeda", "caliber": "K26", "liftAngle": 42, "bph": 18000 },
+      { "brand": "Poljot", "caliber": "2609", "liftAngle": 51, "bph": 18000 },
+      { "brand": "Poljot", "caliber": "2612", "liftAngle": 49, "bph": 18000 },
+      { "brand": "Poljot", "caliber": "2614", "liftAngle": 51, "bph": 18000 },
+      { "brand": "Poljot", "caliber": "3017", "liftAngle": 48, "bph": 18000 },
+      { "brand": "Poljot", "caliber": "3133", "liftAngle": 51, "bph": 21600 },
+      { "brand": "Raketa", "caliber": "26xx", "liftAngle": 42, "bph": 18000 },
+      { "brand": "Slava", "caliber": "16xx", "liftAngle": 49, "bph": 18000 },
+      { "brand": "Slava", "caliber": "24xx", "liftAngle": 49, "bph": 18000 },
+      { "brand": "Slava", "caliber": "5498", "liftAngle": 47, "bph": 18000 },
+      { "brand": "Vostok", "caliber": "2209 (Mir)", "liftAngle": 45, "bph": 18000, "note": "~45° misurato empiricamente" },
+      { "brand": "Vostok", "caliber": "22xx (2214 ecc.)", "liftAngle": 46, "bph": 18000 },
+      { "brand": "Vostok", "caliber": "24xx (Amphibia/Komand.)", "liftAngle": 42, "bph": 19800 },
+      { "brand": "Vostok", "caliber": "2431", "liftAngle": 44, "bph": 19800, "note": "lift angle non confermato ufficialmente" },
+      { "brand": "Vostok", "caliber": "2809 (Wolna/Precision)", "liftAngle": 44, "bph": 19800, "note": "dibattuto 42-46°, consenso community 44°" },
+      { "brand": "Vostok", "caliber": "28xx", "liftAngle": 44, "bph": 21600 },
+      { "brand": "Zarja", "caliber": "15xx", "liftAngle": 43, "bph": 18000 },
+      { "brand": "Zarja", "caliber": "16xx", "liftAngle": 44, "bph": 18000 },
+      { "brand": "Zarja", "caliber": "20xx", "liftAngle": 44, "bph": 18000 }
+    ]
+  },
+  "swiss_japanese": {
+    "label": "Svizzeri / Giapponesi / Moderni",
+    "calibers": [
+      { "brand": "ETA", "caliber": "2824-2", "liftAngle": 52, "bph": 28800 },
+      { "brand": "ETA", "caliber": "6497 / 6498", "liftAngle": 53, "bph": 18000 },
+      { "brand": "ETA", "caliber": "Valjoux 7750", "liftAngle": 53, "bph": 28800 },
+      { "brand": "Sellita", "caliber": "SW200 / SW300", "liftAngle": 52, "bph": 28800 },
+      { "brand": "Seiko", "caliber": "4R35 / 4R36", "liftAngle": 50, "bph": 21600 },
+      { "brand": "Seiko", "caliber": "6R15 / 6R35", "liftAngle": 51, "bph": 21600 },
+      { "brand": "Seiko", "caliber": "NH35 / NH36", "liftAngle": 50, "bph": 21600 },
+      { "brand": "Miyota", "caliber": "8215 / 8217", "liftAngle": 51, "bph": 21600 },
+      { "brand": "Miyota", "caliber": "9015", "liftAngle": 52, "bph": 28800 },
+      { "brand": "Rolex", "caliber": "3135", "liftAngle": 53, "bph": 28800 },
+      { "brand": "Omega", "caliber": "Co-Axial 8500", "liftAngle": 60, "bph": 25200 },
+      { "brand": "Generica", "caliber": "Standard 52°", "liftAngle": 52, "bph": 28800 }
+    ]
+  }
+}
