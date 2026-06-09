@@ -1,33 +1,19 @@
 /**
- * analyzer.js — Algoritmo di analisi timegrapher
+ * analyzer.js v2.1 — Algoritmo corretto per TGBC piezoelettrico
  *
- * ALGORITMO:
- * Ogni tick di un orologio meccanico è composto da 3 impulsi sonori:
- *   P1 = unlocking (inizio levata)
- *   P2 = impulse (contatto perno impulso/forcella)
- *   P3 = drop (caduta dente ruota scappamento)
- *
- * Rate (scarto giornaliero):
- *   Misurato dall'intervallo medio tra tick consecutivi.
- *   Se BPH atteso = 18000 → intervallo teorico = 3600/18000 = 0.200s
- *   Scarto = (intervallo_misurato - intervallo_teorico) / intervallo_teorico × 86400 s/giorno
- *
- * Beat Error:
- *   Differenza temporale tra tick e tock (ms).
- *   Ideale = 0 ms. Accettabile < 1.0 ms.
- *
- * Ampiezza:
- *   Formula: A = (3600 × liftAngle) / (ΔT × π × BPH)
- *   dove ΔT = intervallo P1-P3 in secondi.
- *   Risultato in gradi.
- *
- * BPH auto-detect:
- *   Prova i valori comuni [18000, 21600, 25200, 28800, 36000],
- *   sceglie quello che minimizza la varianza degli intervalli.
+ * CORREZIONI v2.1:
+ * - _minExpectedInterval: usa BPH reale, non moltiplicato
+ * - Filtro intervalli allargato: accetta fino a 3× l'intervallo teorico
+ *   (gestisce tick mancati senza sporcare la media)
+ * - _detectBPH: l'intervallo tra tick consecutivi = 1 beat = 3600/BPH
+ *   NON moltiplicare per 2 (ogni tick = 1 beat dello scappamento)
+ * - Cooldown picchi calibrato su 18000 BPH (55ms) non 8ms
+ * - Soglia adattiva più aggressiva per TGBC piezoelettrico
+ * - Beat error: finestra accettazione allargata a 20ms
  */
 
 const COMMON_BPH = [18000, 19800, 21600, 25200, 28800, 36000];
-const MAX_TICK_HISTORY = 120; // campioni per statistiche robuste
+const MAX_TICK_HISTORY = 120;
 
 export class WatchAnalyzer {
   constructor() {
@@ -35,335 +21,296 @@ export class WatchAnalyzer {
   }
 
   reset() {
-    this.sampleRate = 44100;
-    this.bph = 21600;           // default, sovrascrivibile
-    this.liftAngle = 52;        // default, sovrascrivibile
+    this.sampleRate    = 44100;
+    this.bph           = 18000;
+    this.liftAngle     = 51;
     this.autoDetectBPH = true;
 
-    // Buffer campioni grezzi
-    this._rawBuffer = [];
-    this._rawBufferSize = 44100 * 2; // 2 secondi
-
     // Rilevamento picchi
-    this._lastPeakTime = -1;
-    this._peakCooldown = 0;
-    this._threshold = 0.01;
-    this._noiseFloor = 0.002;
-    this._adaptiveGain = 1.0;
+    this._lastPeakSample  = -1;
+    this._peakCooldown    = 0;
+    this._threshold       = 0.005;
+    this._noiseFloor      = 0.001;
+    this._adaptiveGain    = 1.0;
+    this._peakMax         = 0;      // picco massimo visto (per gain)
 
-    // Storia dei tick
-    this._tickTimes = [];      // timestamp (in campioni) di P1 di ogni tick
-    this._tickIntervals = [];  // intervalli tra tick consecutivi (secondi)
-    this._beatErrors = [];     // differenze tick-tock (ms)
-    this._deltaTs = [];        // intervalli P1-P3 per ampiezza (secondi)
+    // Storia tick
+    this._tickTimes     = [];  // secondi assoluti di ogni tick (P1)
+    this._tickIntervals = [];  // intervalli tra tick consecutivi (s)
+    this._beatErrors    = [];  // ms
+    this._deltaTs       = [];  // s, per ampiezza
 
-    // Sub-struttura per tick/tock alternati
-    this._lastTickTime = -1;
-    this._lastTockTime = -1;
-    this._isTick = true;       // alterna tick/tock
+    // Tick/tock alternanza
+    this._lastTickSec   = -1;
+    this._isTick        = true;
 
-    // Tick corrente (per catturare P1 e P3)
-    this._currentTickP1 = -1;
-    this._currentTickPeaks = [];
+    // Tick in costruzione
+    this._curP1         = -1;   // sample time del P1 corrente
+    this._curPeaks      = [];   // { sample, amp }
 
-    // Contatore campioni totali
-    this._sampleCount = 0;
-
-    // Risultati correnti
-    this.results = this._emptyResults();
-
-    // Calibrazione offset (da sync atomico)
-    this.calibrationOffset = 0; // secondi/giorno
-
-    // State
-    this.running = false;
-    this.sampleCount = 0;
-    this.startTime = null;
+    this._sampleCount   = 0;
+    this.results        = this._emptyResults();
+    this.calibrationOffset = 0;
+    this.running        = false;
+    this.startTime      = null;
   }
 
   _emptyResults() {
     return {
-      rate: null,         // secondi/giorno
-      beatError: null,    // ms
-      amplitude: null,    // gradi
-      bphDetected: null,  // BPH rilevato
-      quality: 0,         // 0-100 qualità del segnale
-      tickCount: 0,
-      ready: false,
+      rate: null, beatError: null, amplitude: null,
+      bphDetected: null, quality: 0, tickCount: 0, ready: false
     };
   }
 
   configure(bph, liftAngle, autoDetect) {
-    this.bph = bph;
-    this.liftAngle = liftAngle;
+    this.bph           = bph;
+    this.liftAngle     = liftAngle;
     this.autoDetectBPH = autoDetect;
   }
 
-  setCalibrationOffset(offsetSecPerDay) {
-    this.calibrationOffset = offsetSecPerDay;
-  }
+  setCalibrationOffset(v) { this.calibrationOffset = v; }
 
-  /**
-   * Riceve chunk di campioni audio Float32Array
-   */
   processSamples(samples, sampleRate) {
     this.sampleRate = sampleRate;
     if (!this.running) return;
 
-    // Aggiorna soglia adattiva (noise floor)
-    this._updateAdaptiveThreshold(samples);
+    this._updateThreshold(samples);
 
-    // Rileva picchi nel chunk
     for (let i = 0; i < samples.length; i++) {
-      const abs = Math.abs(samples[i]) * this._adaptiveGain;
-      const globalTime = this._sampleCount + i; // in campioni
+      const val = Math.abs(samples[i]) * this._adaptiveGain;
+      const globalSample = this._sampleCount + i;
 
-      if (abs > this._threshold && this._peakCooldown <= 0) {
-        this._onPeak(globalTime, abs);
-        // Cooldown: almeno 8 ms tra picchi dello stesso tick
-        this._peakCooldown = Math.floor(sampleRate * 0.008);
+      if (val > this._threshold && this._peakCooldown <= 0) {
+        this._onPeak(globalSample, val);
+        // Cooldown minimo = 20ms (evita di contare rimbalzi del piezo)
+        this._peakCooldown = Math.floor(sampleRate * 0.020);
       }
-
       if (this._peakCooldown > 0) this._peakCooldown--;
     }
 
     this._sampleCount += samples.length;
-    this.sampleCount = this._sampleCount;
+    this.sampleCount   = this._sampleCount;
 
-    // Ricalcola risultati ogni chunk
-    if (this._tickTimes.length >= 4) {
-      this._computeResults();
+    // Chiudi tick in sospeso se è passato abbastanza tempo (>80% intervallo teorico)
+    this._flushStaleTick();
+
+    if (this._tickTimes.length >= 4) this._computeResults();
+  }
+
+  _updateThreshold(samples) {
+    // Peak del chunk
+    let peak = 0;
+    let sumSq = 0;
+    for (const s of samples) {
+      const a = Math.abs(s);
+      if (a > peak) peak = a;
+      sumSq += s * s;
+    }
+    const rms = Math.sqrt(sumSq / samples.length);
+
+    // Noise floor: media mobile lenta
+    this._noiseFloor = this._noiseFloor * 0.97 + rms * 0.03;
+
+    // Soglia = 6× noise floor (TGBC ha segnale forte e netto)
+    // minimo assoluto 0.003 per evitare falsi positivi in silenzio
+    this._threshold = Math.max(0.003, this._noiseFloor * 6);
+
+    // Gain adattivo: normalizza verso 0.05 di ampiezza target
+    if (peak > 0) {
+      this._peakMax = this._peakMax * 0.995 + peak * 0.005;
+      const targetAmp = 0.05;
+      this._adaptiveGain = this._peakMax > 0
+        ? Math.min(50, targetAmp / this._peakMax)
+        : 1.0;
     }
   }
 
-  _updateAdaptiveThreshold(samples) {
-    // RMS del chunk
-    let rms = 0;
-    for (let s of samples) rms += s * s;
-    rms = Math.sqrt(rms / samples.length);
-
-    // Aggiorna noise floor con media mobile lenta
-    this._noiseFloor = this._noiseFloor * 0.95 + rms * 0.05;
-
-    // Soglia = 4× noise floor, ma minimo 0.005
-    this._threshold = Math.max(0.005, this._noiseFloor * 4);
-
-    // Gain adattivo: se segnale troppo debole, amplifica virtualmente
-    if (this._noiseFloor < 0.001) {
-      this._adaptiveGain = Math.min(20, 0.01 / Math.max(this._noiseFloor, 0.0001));
-    } else {
-      this._adaptiveGain = 1.0;
-    }
+  _beatInterval() {
+    // Durata teorica di 1 beat in secondi
+    return 3600 / this.bph;
   }
 
-  _onPeak(sampleTime, amplitude) {
-    const timeSeconds = sampleTime / this.sampleRate;
-    const minIntervalSec = this._minExpectedInterval();
+  _onPeak(sampleTime, amp) {
+    const timeSec = sampleTime / this.sampleRate;
 
-    // Se è il primo picco di un nuovo tick (abbastanza distante dal precedente)
-    if (this._lastPeakTime < 0 ||
-        (timeSeconds - this._lastPeakTime / this.sampleRate) > minIntervalSec * 0.4) {
+    // Intervallo dal picco precedente in secondi
+    const sinceLast = this._lastPeakSample >= 0
+      ? (sampleTime - this._lastPeakSample) / this.sampleRate
+      : 999;
 
-      // Chiudi il tick precedente se aveva P1 e almeno un altro picco
-      if (this._currentTickP1 >= 0 && this._currentTickPeaks.length >= 1) {
-        this._closeTick(sampleTime);
+    // Un nuovo tick inizia se il picco è distante almeno 40% di un beat
+    // dal precedente (separa tick diversi dai sotto-picchi dello stesso tick)
+    const minNewTickGap = this._beatInterval() * 0.40;
+
+    if (sinceLast >= minNewTickGap) {
+      // Chiudi tick precedente
+      if (this._curP1 >= 0 && this._curPeaks.length >= 1) {
+        this._closeTick();
       }
-
-      // Inizia nuovo tick: P1
-      this._currentTickP1 = sampleTime;
-      this._currentTickPeaks = [{ time: sampleTime, amp: amplitude }];
-
+      // Inizia nuovo tick
+      this._curP1    = sampleTime;
+      this._curPeaks = [{ sample: sampleTime, amp }];
     } else {
-      // Picco successivo nello stesso tick: P2 o P3
-      if (this._currentTickPeaks.length < 3) {
-        this._currentTickPeaks.push({ time: sampleTime, amp: amplitude });
+      // Sotto-picco dello stesso tick (P2, P3)
+      if (this._curPeaks.length < 3) {
+        this._curPeaks.push({ sample: sampleTime, amp });
       }
     }
 
-    this._lastPeakTime = sampleTime;
+    this._lastPeakSample = sampleTime;
   }
 
-  _closeTick(nextTickTime) {
-    const p1Time = this._currentTickP1;
-    const peaks = this._currentTickPeaks;
+  _flushStaleTick() {
+    // Se il tick in costruzione è rimasto aperto per più di 1.5 beat, chiudilo
+    if (this._curP1 < 0) return;
+    const age = (this._sampleCount - this._curP1) / this.sampleRate;
+    if (age > this._beatInterval() * 1.5 && this._curPeaks.length >= 1) {
+      this._closeTick();
+    }
+  }
 
-    // Registra tempo del tick (P1)
-    const p1Sec = p1Time / this.sampleRate;
+  _closeTick() {
+    const p1Sec = this._curP1 / this.sampleRate;
+    const peaks = this._curPeaks;
+
     this._tickTimes.push(p1Sec);
 
-    // Intervallo dal tick precedente
+    // ── Intervallo tra tick consecutivi ──
     if (this._tickTimes.length > 1) {
       const interval = p1Sec - this._tickTimes[this._tickTimes.length - 2];
-      // Filtra intervalli plausibili (tra 0.08s e 0.25s)
-      if (interval > 0.08 && interval < 0.25) {
-        this._tickIntervals.push(interval);
-        if (this._tickIntervals.length > MAX_TICK_HISTORY)
-          this._tickIntervals.shift();
+      // Accetta intervalli tra 0.5× e 3.5× il beat teorico
+      // (3.5× gestisce fino a 3 tick mancati consecutivi)
+      const beat = this._beatInterval();
+      if (interval > beat * 0.5 && interval < beat * 3.5) {
+        // Normalizza: se salta 2 tick → dividi per 2, ecc.
+        // Trova il divisore più plausibile
+        const divisor = Math.round(interval / beat);
+        if (divisor >= 1 && divisor <= 3) {
+          const normalized = interval / divisor;
+          this._tickIntervals.push(normalized);
+          if (this._tickIntervals.length > MAX_TICK_HISTORY) this._tickIntervals.shift();
+        }
       }
     }
 
-    // Beat error: differenza tick/tock
+    // ── Beat error (tick/tock) ──
     if (this._isTick) {
-      this._lastTickTime = p1Sec;
+      this._lastTickSec = p1Sec;
     } else {
-      if (this._lastTickTime > 0) {
-        const halfBeat = (1 / (this.bph / 3600)) / 2; // secondi tra tick e tock ideale
-        const measured = p1Sec - this._lastTickTime;
-        const beatErr = (measured - halfBeat) * 1000; // in ms
-        if (Math.abs(beatErr) < 10) { // filtra valori assurdi
+      if (this._lastTickSec > 0) {
+        const halfBeat  = this._beatInterval() / 2;
+        const measured  = p1Sec - this._lastTickSec;
+        const beatErr   = (measured - halfBeat) * 1000; // ms
+        // Accetta solo se plausibile (< 20ms)
+        if (Math.abs(beatErr) < 20) {
           this._beatErrors.push(beatErr);
-          if (this._beatErrors.length > MAX_TICK_HISTORY)
-            this._beatErrors.shift();
+          if (this._beatErrors.length > MAX_TICK_HISTORY) this._beatErrors.shift();
         }
       }
     }
     this._isTick = !this._isTick;
 
-    // DeltaT per ampiezza: intervallo P1-P3 (o P1-P2 se solo 2 picchi)
+    // ── DeltaT per ampiezza ──
     if (peaks.length >= 3) {
-      const deltaT = (peaks[2].time - peaks[0].time) / this.sampleRate;
-      if (deltaT > 0.001 && deltaT < 0.05) {
-        this._deltaTs.push(deltaT);
-        if (this._deltaTs.length > MAX_TICK_HISTORY)
-          this._deltaTs.shift();
+      const dt = (peaks[2].sample - peaks[0].sample) / this.sampleRate;
+      if (dt > 0.0005 && dt < 0.060) {
+        this._deltaTs.push(dt);
+        if (this._deltaTs.length > MAX_TICK_HISTORY) this._deltaTs.shift();
       }
     } else if (peaks.length >= 2) {
-      const deltaT = (peaks[1].time - peaks[0].time) / this.sampleRate;
-      if (deltaT > 0.001 && deltaT < 0.05) {
-        this._deltaTs.push(deltaT);
-        if (this._deltaTs.length > MAX_TICK_HISTORY)
-          this._deltaTs.shift();
+      const dt = (peaks[1].sample - peaks[0].sample) / this.sampleRate;
+      if (dt > 0.0005 && dt < 0.060) {
+        this._deltaTs.push(dt);
+        if (this._deltaTs.length > MAX_TICK_HISTORY) this._deltaTs.shift();
       }
     }
 
     if (this._tickTimes.length > MAX_TICK_HISTORY) this._tickTimes.shift();
-  }
 
-  _minExpectedInterval() {
-    // Intervallo minimo tra tick attesi (per BPH corrente)
-    return (3600 / (this.bph * 1.5));
+    // Reset tick corrente
+    this._curP1    = -1;
+    this._curPeaks = [];
   }
 
   _computeResults() {
-    const r = this._emptyResults();
-    r.tickCount = this._tickTimes.length;
+    const r      = this._emptyResults();
+    r.tickCount  = this._tickTimes.length;
 
-    // --- Auto-detect BPH ---
-    if (this.autoDetectBPH && this._tickIntervals.length >= 8) {
-      r.bphDetected = this._detectBPH();
-      // Usa BPH rilevato per i calcoli
-      const workingBPH = r.bphDetected || this.bph;
+    const workingBPH = this.autoDetectBPH && this._tickIntervals.length >= 8
+      ? this._detectBPH()
+      : this.bph;
 
-      // --- Rate (scarto giornaliero) ---
-      r.rate = this._computeRate(workingBPH);
+    r.bphDetected = workingBPH;
+    r.rate        = this._computeRate(workingBPH);
+    r.amplitude   = this._computeAmplitude(workingBPH);
 
-      // --- Ampiezza ---
-      r.amplitude = this._computeAmplitude(workingBPH);
-    } else {
-      r.bphDetected = this.bph;
-      r.rate = this._computeRate(this.bph);
-      r.amplitude = this._computeAmplitude(this.bph);
-    }
-
-    // --- Beat Error ---
     if (this._beatErrors.length >= 4) {
       r.beatError = this._trimmedMean(this._beatErrors, 0.15);
     }
 
-    // --- Qualità segnale ---
     r.quality = this._computeQuality();
 
-    // --- Applica offset calibrazione ---
-    if (r.rate !== null) {
-      r.rate += this.calibrationOffset;
-    }
+    if (r.rate !== null) r.rate += this.calibrationOffset;
 
-    r.ready = r.tickCount >= 8;
+    r.ready      = r.tickCount >= 8 && this._tickIntervals.length >= 6;
     this.results = r;
   }
 
   _detectBPH() {
     if (this._tickIntervals.length < 8) return this.bph;
 
-    const mean = this._trimmedMean(this._tickIntervals, 0.2);
-    // BPH = 3600 / intervallo_medio (ogni beat = tick o tock)
-    // Ma l'intervallo tra tick consecutivi = 2 beat
+    // _tickIntervals contiene già intervalli normalizzati a 1 beat
+    // quindi BPH = 3600 / mean_interval
+    const mean   = this._trimmedMean(this._tickIntervals, 0.2);
     const bphRaw = 3600 / mean;
 
-    // Trova il BPH standard più vicino
-    let best = this.bph;
-    let bestDist = Infinity;
+    let best = this.bph, bestDist = Infinity;
     for (const b of COMMON_BPH) {
       const d = Math.abs(bphRaw - b);
       if (d < bestDist) { bestDist = d; best = b; }
     }
 
-    // Accetta solo se entro 5%
-    return bestDist / best < 0.05 ? best : this.bph;
+    // Accetta se entro 8% (più tollerante per orologi fuori regolazione)
+    return (bestDist / best) < 0.08 ? best : this.bph;
   }
 
   _computeRate(bph) {
     if (this._tickIntervals.length < 6) return null;
-    const mean = this._trimmedMean(this._tickIntervals, 0.2);
-    const theoretical = 3600 / bph; // intervallo teorico tra tick
-    const deviation = (mean - theoretical) / theoretical;
-    return deviation * 86400; // secondi/giorno
+    const mean        = this._trimmedMean(this._tickIntervals, 0.2);
+    const theoretical = 3600 / bph;
+    const deviation   = (mean - theoretical) / theoretical;
+    return deviation * 86400; // s/giorno
   }
 
   _computeAmplitude(bph) {
     if (this._deltaTs.length < 4) return null;
     const deltaT = this._trimmedMean(this._deltaTs, 0.2);
-    // A = (3600 × liftAngle) / (ΔT × π × BPH)
-    const amp = (3600 * this.liftAngle) / (deltaT * Math.PI * bph);
-    // Valori plausibili: 150-330 gradi
-    if (amp < 100 || amp > 380) return null;
+    const amp    = (3600 * this.liftAngle) / (deltaT * Math.PI * bph);
+    if (amp < 80 || amp > 400) return null;
     return amp;
   }
 
   _computeQuality() {
     if (this._tickIntervals.length < 4) return 0;
-
-    // Varianza degli intervalli normalizzata
     const mean = this._trimmedMean(this._tickIntervals, 0.1);
     let variance = 0;
     for (const v of this._tickIntervals) variance += (v - mean) ** 2;
     variance /= this._tickIntervals.length;
-    const cv = Math.sqrt(variance) / mean; // coefficiente di variazione
-
-    // Qualità inversamente proporzionale alla varianza
-    // cv < 0.002 → qualità 100, cv > 0.05 → qualità 0
-    const q = Math.max(0, Math.min(100, (1 - cv / 0.05) * 100));
-
-    // Penalizza se pochi campioni
-    const sampleFactor = Math.min(1, this._tickIntervals.length / 20);
-    return Math.round(q * sampleFactor);
+    const cv = Math.sqrt(variance) / mean;
+    const q  = Math.max(0, Math.min(100, (1 - cv / 0.04) * 100));
+    return Math.round(q * Math.min(1, this._tickIntervals.length / 20));
   }
 
-  /**
-   * Trimmed mean: rimuove i `trim` peggiori da ciascun lato
-   */
   _trimmedMean(arr, trim = 0.1) {
-    if (arr.length === 0) return 0;
-    const sorted = [...arr].sort((a, b) => a - b);
-    const cut = Math.floor(sorted.length * trim);
+    if (!arr.length) return 0;
+    const sorted  = [...arr].sort((a, b) => a - b);
+    const cut     = Math.floor(sorted.length * trim);
     const trimmed = sorted.slice(cut, sorted.length - cut);
-    if (trimmed.length === 0) return sorted[Math.floor(sorted.length / 2)];
+    if (!trimmed.length) return sorted[Math.floor(sorted.length / 2)];
     return trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
   }
 
-  /**
-   * Restituisce gli ultimi N intervalli per il paper strip
-   */
-  getPaperStripData(n = 60) {
-    return this._tickIntervals.slice(-n);
-  }
-
-  start() {
-    this.running = true;
-    this.startTime = Date.now();
-  }
-
-  pause() {
-    this.running = false;
-  }
+  getPaperStripData(n = 60) { return this._tickIntervals.slice(-n); }
+  start()  { this.running = true;  this.startTime = Date.now(); }
+  pause()  { this.running = false; }
 }
