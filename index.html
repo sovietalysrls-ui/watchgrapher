@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#39ff14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>WatchGrapher</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="stylesheet" href="./css/app.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- HEADER -->
+  <header class="wg-header">
+    <div>
+      <div class="wg-logo-title">WATCHGRAPHER</div>
+      <div class="wg-logo-sub">Cronocomparatore v2 · TGBC</div>
+    </div>
+    <div class="header-right">
+      <div class="profile-toggle">
+        <button id="btn-profile-soviet" class="profile-btn active">☭ URSS</button>
+        <button id="btn-profile-modern" class="profile-btn">⌚ Modern</button>
+      </div>
+      <div style="font-family:var(--font-mono);font-size:9px;color:var(--text-dim);text-align:right" id="profile-desc-short">
+        Tol. ±30 s/g · sovietici
+      </div>
+    </div>
+  </header>
+
+  <!-- MICROFONO -->
+  <div class="mic-section">
+    <span class="mic-label">MIC</span>
+    <select id="mic-select" class="mic-select">
+      <option value="">Caricamento microfoni...</option>
+    </select>
+    <button id="btn-refresh-mic" class="btn-icon" title="Aggiorna lista">↻</button>
+  </div>
+
+  <!-- SELEZIONE CALIBRO -->
+  <div class="caliber-section">
+    <div class="section-title">Calibro orologio</div>
+
+    <!-- Badge calibro selezionato -->
+    <div id="caliber-badge" class="caliber-badge">
+      <span style="color:var(--text-dim);font-size:11px;font-family:var(--font-mono)">
+        ▸ Cerca o seleziona — oppure usa Auto-detect
+      </span>
+    </div>
+
+    <!-- Ricerca -->
+    <div class="caliber-search-row">
+      <input id="caliber-search" class="caliber-search" type="text"
+             placeholder="es: Vostok, Amphibia, 24xx, Raketa..." autocomplete="off">
+      <button id="btn-autodetect" class="btn-icon" title="Auto-detect BPH" style="white-space:nowrap;font-size:10px;font-family:var(--font-mono);padding:6px 8px">
+        AUTO
+      </button>
+    </div>
+
+    <!-- Grid calibri (si filtra con la ricerca) -->
+    <div id="caliber-grid" class="caliber-grid"></div>
+
+    <!-- Parametri manuali override -->
+    <div style="display:flex;justify-content:flex-end;margin-top:6px">
+      <button id="btn-toggle-manual" class="btn-toggle-manual">▸ parametri manuali</button>
+    </div>
+    <div id="manual-params" class="manual-params hidden">
+      <div class="param-group">
+        <span class="param-label">BPH</span>
+        <select id="bph-select" class="param-select">
+          <option value="18000">18.000</option>
+          <option value="19800">19.800 (Vostok 24xx)</option>
+          <option value="21600">21.600</option>
+          <option value="25200">25.200</option>
+          <option value="28800">28.800</option>
+          <option value="36000">36.000</option>
+        </select>
+      </div>
+      <div class="param-group">
+        <span class="param-label">Lift angle (°)</span>
+        <input id="lift-input" class="param-input" type="number" value="42" min="30" max="70" step="0.5">
+      </div>
+    </div>
+  </div>
+
+  <!-- START / STOP -->
+  <div class="start-section">
+    <button id="btn-start" class="btn-start-big">▶ START</button>
+    <button id="btn-stop"  class="btn-stop-big">■ STOP</button>
+    <button id="btn-reset" class="btn-reset-sm" title="Reset">↺</button>
+  </div>
+
+  <!-- BARRA CONFIDENZA -->
+  <div class="confidence-bar-wrap">
+    <div class="confidence-row">
+      <span class="confidence-label">Affidabilità misura</span>
+      <span id="confidence-status" class="confidence-status" style="color:var(--text-dim)">
+        — in attesa
+      </span>
+    </div>
+    <div class="confidence-bar">
+      <div id="confidence-fill" class="confidence-fill" style="width:0%"></div>
+    </div>
+  </div>
+
+  <!-- STRUMENTO -->
+  <div class="instrument">
+
+    <!-- Segnale + BPH -->
+    <div class="signal-row">
+      <span class="signal-lbl">Segnale</span>
+      <div class="signal-bar">
+        <div id="signal-fill" class="signal-fill" style="width:0%"></div>
+      </div>
+      <span id="signal-pct" class="signal-pct">0%</span>
+    </div>
+
+    <!-- 3 metriche -->
+    <div class="metrics-row">
+      <div class="metric" id="metric-rate">
+        <div class="metric-lbl">Rate</div>
+        <div id="val-rate" class="metric-val dim">—</div>
+        <div class="metric-unit">sec/giorno</div>
+        <div id="grade-rate" class="metric-grade"></div>
+      </div>
+      <div class="metric" id="metric-be">
+        <div class="metric-lbl">Beat Error</div>
+        <div id="val-be" class="metric-val dim">—</div>
+        <div class="metric-unit">ms</div>
+        <div id="grade-be" class="metric-grade"></div>
+      </div>
+      <div class="metric" id="metric-amp">
+        <div class="metric-lbl">Ampiezza</div>
+        <div id="val-amp" class="metric-val dim">—</div>
+        <div class="metric-unit">gradi</div>
+        <div id="grade-amp" class="metric-grade"></div>
+      </div>
+    </div>
+
+    <!-- Paper strip -->
+    <div class="strip-wrap">
+      <div class="strip-header">
+        <span class="strip-title">Deriva nel tempo</span>
+        <span id="strip-stability" class="strip-stability waiting">—</span>
+      </div>
+      <canvas id="paper-strip"></canvas>
+    </div>
+
+    <!-- BPH row -->
+    <div class="bph-row">
+      <span>BPH: <span id="bph-detected" class="bph-detected">auto</span></span>
+      <span class="tick-count">Tick: <span id="tick-count">0</span></span>
+    </div>
+
+  </div><!-- /instrument -->
+
+  <!-- SPIEGAZIONE PARAMETRI -->
+  <div id="params-explain" class="params-explain">
+    <div class="param-explain" id="pe-rate">
+      <div class="pe-title">Rate</div>
+      <div id="pe-rate-text" class="pe-text">—</div>
+    </div>
+    <div class="param-explain" id="pe-be">
+      <div class="pe-title">Beat Error</div>
+      <div id="pe-be-text" class="pe-text">—</div>
+    </div>
+    <div class="param-explain" id="pe-amp">
+      <div class="pe-title">Ampiezza</div>
+      <div id="pe-amp-text" class="pe-text">—</div>
+    </div>
+  </div>
+
+  <!-- VERDETTO FINALE -->
+  <div class="verdict-wrap">
+    <div id="verdict-band" class="verdict-main-band waiting">
+      <div id="verdict-icon" class="verdict-icon-big">…</div>
+      <div>
+        <div id="verdict-label" class="verdict-label vl-waiting">IN ATTESA</div>
+        <div id="verdict-sub"   class="verdict-sub-text">Avvicina l'orologio al microfono TGBC</div>
+      </div>
+    </div>
+    <div id="verdict-detail" class="verdict-detail"></div>
+  </div>
+
+  <!-- LOG -->
+  <div id="wg-log" class="wg-log">
+    <span class="log-info">WatchGrapher pronto.</span>
+  </div>
+
+  <!-- IMPOSTAZIONI AVANZATE -->
+  <button id="advanced-toggle" class="advanced-toggle">
+    <span class="arrow">▶</span>&nbsp; IMPOSTAZIONI AVANZATE
+  </button>
+  <div id="advanced-section" class="advanced-section">
+    <div class="adv-row">
+      <span class="adv-label">Clock sync NTP</span>
+      <button id="btn-calibrate" class="btn-calibrate">⏱ Calibra via Internet</button>
+      <div class="cal-status-text">
+        <div id="cal-dot" class="cal-dot"></div>
+        <span id="cal-text">Non calibrato</span>
+      </div>
+    </div>
+    <div style="font-family:var(--font-mono);font-size:9px;color:var(--text-dim);line-height:1.6;margin-top:4px">
+      Opzionale. Sincronizza il clock di sistema con orologi atomici via Internet per migliorare 
+      la precisione del rate da ±2 s/g a ±0.5 s/g. Non necessario per uso sul campo.
+    </div>
+  </div>
+
+</div><!-- /app -->
+
+<!-- MODAL CALIBRAZIONE -->
+<div id="cal-modal" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <div class="modal-title">CALIBRA CLOCK</div>
+    <div class="modal-body">
+      5 misurazioni verso server NTP (worldtimeapi.org). Necessaria connessione Internet.
+      Latenza di rete elevata riduce la precisione.
+    </div>
+    <div class="modal-progress">
+      <div id="cal-progress-fill" class="modal-progress-fill" style="width:0%"></div>
+    </div>
+    <div id="cal-status" class="modal-status">Pronto...</div>
+    <div id="cal-result" class="modal-result"></div>
+    <div class="modal-actions">
+      <button id="btn-cal-cancel" class="btn-modal btn-modal-cancel">Annulla</button>
+      <button id="btn-cal-ok"     class="btn-modal btn-modal-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
